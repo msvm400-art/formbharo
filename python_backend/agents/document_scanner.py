@@ -1,0 +1,160 @@
+import os
+import io
+import base64
+import json
+from dotenv import load_dotenv
+from agents.offline_ai import offline_scan_document
+
+env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env.local")
+load_dotenv(env_path)
+
+# ─────────────────────────────────────────────────────────────────
+# MODE CONTROL: True = use EasyOCR (offline). False = use Gemini.
+# ─────────────────────────────────────────────────────────────────
+OFFLINE_MODE = True
+
+# Lazy-load EasyOCR reader to avoid slow startup if not needed
+_ocr_reader = None
+def _get_ocr_reader():
+    global _ocr_reader
+    if _ocr_reader is None:
+        try:
+            import easyocr
+            print("[Scanner] Initializing EasyOCR reader (English + Hindi)...")
+            _ocr_reader = easyocr.Reader(['en', 'hi'], gpu=False)
+            print("[Scanner] EasyOCR ready.")
+        except Exception as e:
+            print(f"[Scanner] EasyOCR init failed: {e}")
+    return _ocr_reader
+
+
+def run_easyocr_scan(base64_data: str, mime_type: str, hint_doc_type: str = None):
+    """Run EasyOCR on raw image/PDF bytes and extract text + structured data."""
+    agent_steps = []
+    agent_steps.append({"step": "init_offline_ocr", "status": "running", "note": "EasyOCR Offline Scan"})
+
+    reader = _get_ocr_reader()
+    if reader is None:
+        agent_steps[-1]["status"] = "failed"
+        return {"success": False, "error": "EasyOCR not available.", "agentSteps": agent_steps}
+
+    try:
+        raw_bytes = base64.b64decode(base64_data)
+
+        # Handle PDF: convert first page to image using PyMuPDF
+        if mime_type == "application/pdf":
+            try:
+                import fitz
+                doc = fitz.open(stream=raw_bytes, filetype="pdf")
+                page = doc.load_page(0)
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                image_array = img_bytes
+            except Exception as e:
+                agent_steps[-1]["status"] = "failed"
+                return {"success": False, "error": f"PDF-to-image conversion failed: {e}", "agentSteps": agent_steps}
+        else:
+            image_array = raw_bytes
+
+        import numpy as np
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_array)).convert("RGB")
+        img_np = np.array(img)
+
+        agent_steps.append({"step": "ocr_scan", "status": "running"})
+        results = reader.readtext(img_np, detail=0, paragraph=True)
+        full_text = "\n".join(results)
+        agent_steps[-1]["status"] = "done"
+        agent_steps[-1]["note"] = f"Extracted {len(results)} text blocks"
+
+        # Post-process with heuristic extractor
+        agent_steps.append({"step": "heuristic_extraction", "status": "running"})
+        extracted_data = offline_scan_document(full_text, hint_doc_type)
+        # Include raw OCR text for debugging
+        extracted_data["_raw_ocr_text"] = full_text[:500]  # first 500 chars
+        field_count = len([v for k, v in extracted_data.items() if v and not k.startswith("_")])
+        agent_steps[-1]["status"] = "done"
+
+        return {
+            "success": True,
+            "detectedDocType": hint_doc_type or "scanned_doc",
+            "detectedConfidence": "medium",
+            "extractedData": extracted_data,
+            "fieldCount": field_count,
+            "agentSteps": agent_steps,
+            "modelUsed": "EasyOCR-Offline",
+            "error": None
+        }
+
+    except Exception as e:
+        if agent_steps:
+            agent_steps[-1]["status"] = "failed"
+        return {"success": False, "error": f"Offline OCR Error: {e}", "agentSteps": agent_steps}
+
+
+async def _gemini_scan(base64_data: str, mime_type: str, hint_doc_type: str = None):
+    """Fallback: use Gemini Vision for document scanning."""
+    agent_steps = [{"step": "init_gemini", "status": "running", "note": "Using Python Gemini 1.5 Flash Vision"}]
+
+    if not os.getenv("GEMINI_API_KEY"):
+        agent_steps[-1]["status"] = "failed"
+        return {"success": False, "error": "GEMINI_API_KEY is not set in .env.local", "agentSteps": agent_steps}
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        agent_steps.append({"step": "vision_processing", "status": "running"})
+
+        prompt = f"""
+You are an expert Indian Government Document Scanner Vision AI.
+Extract all details from the provided document image/PDF into a clean JSON object.
+Document type hint: {hint_doc_type or "Unknown"}
+If it is a 10th/12th/Graduation/Diploma marksheet or certificate, dynamically extract ANY details you can find such as:
+"student_name", "father_name", "mother_name", "board_name", "school_name", "roll_number", "year_of_passing", "percentage", "total_marks_obtained", "total_max_marks", "division", "issue_date", "certificate_number".
+
+For Aadhaar: "full_name", "father_name", "dob", "gender", "aadhaar_number", "address_line1", "village_town", "district", "state", "pincode".
+
+For PAN: "full_name", "father_name", "dob", "pan_number".
+
+Ensure all dates are formatted consistently.
+Respond ONLY with the pure raw JSON object. Do NOT wrap in markdown codeblocks. Do NOT include ```json.
+"""
+        response = await model.generate_content_async([
+            {'mime_type': mime_type, 'data': base64_data},
+            prompt
+        ])
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"): raw_text = raw_text[7:]
+        if raw_text.startswith("```"): raw_text = raw_text[3:]
+        raw_text = raw_text.rstrip("`").strip()
+
+        extracted_data = json.loads(raw_text)
+        field_count = len([v for k, v in extracted_data.items() if v])
+
+        agent_steps[-1]["status"] = "done"
+        return {
+            "success": True,
+            "detectedDocType": hint_doc_type or "scanned_doc",
+            "detectedConfidence": "high",
+            "extractedData": extracted_data,
+            "fieldCount": field_count,
+            "agentSteps": agent_steps,
+            "modelUsed": "Python/Gemini-1.5-Flash",
+            "error": None
+        }
+    except Exception as e:
+        if agent_steps:
+            agent_steps[-1]["status"] = "failed"
+        return {"success": False, "error": f"Python AI Engine Error: {e}", "agentSteps": agent_steps}
+
+
+async def run_document_scanner_agent(base64_data: str, mime_type: str, hint_doc_type: str = None):
+    """Main entry point. Uses EasyOCR offline by default."""
+    if OFFLINE_MODE:
+        print("[Scanner] Running OFFLINE EasyOCR scan...")
+        return run_easyocr_scan(base64_data, mime_type, hint_doc_type)
+    else:
+        print("[Scanner] Running Gemini Vision scan...")
+        return await _gemini_scan(base64_data, mime_type, hint_doc_type)
