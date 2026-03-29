@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { writeFile, mkdir } from "fs/promises";
+import path from "path";
 import { runDocumentScannerAgent } from "@/lib/agents/documentScannerAgent";
 
 export const runtime = "nodejs";
@@ -24,6 +26,25 @@ export async function POST(request) {
       mimeType = "application/pdf";
     }
 
+    // 📂 Save file locally ONLY if NOT on Vercel (Local Development)
+    const isVercel = !!process.env.VERCEL;
+    let savedFilename = null;
+    let savedFilePath = null;
+
+    if (!isVercel) {
+      try {
+        const uploadsDir = path.join(process.cwd(), "public", "uploads");
+        await mkdir(uploadsDir, { recursive: true });
+        const ext = (file.name?.split(".").pop() || "jpg").toLowerCase();
+        savedFilename = `${docType || "doc"}_${Date.now()}.${ext}`;
+        savedFilePath = path.join(uploadsDir, savedFilename);
+        await writeFile(savedFilePath, buffer);
+      } catch (err) {
+        console.error("Local save failed (skipping):", err);
+      }
+    }
+
+    // 🤖 Run the Document Scanner Agent (always uses in-memory base64)
     const agentResult = await runDocumentScannerAgent(base64, mimeType, docType);
 
     if (!agentResult.success) {
@@ -31,10 +52,7 @@ export async function POST(request) {
         success: false,
         error: agentResult.error || "Document scanning failed",
         detectedDocType: agentResult.detectedDocType || docType,
-        agentSteps: agentResult.agentSteps || [],
-        data: {},
-        filePath: null,
-        confidence: "none",
+        filePath: savedFilename ? `/uploads/${savedFilename}` : null,
       });
     }
 
@@ -47,10 +65,8 @@ export async function POST(request) {
       detectedConfidence: agentResult.detectedConfidence,
       data: agentResult.extractedData,
       fieldCount,
-      agentSteps: agentResult.agentSteps,
-      modelUsed: agentResult.modelUsed,
-      filePath: null,
-      fileName: file.name,
+      filePath: savedFilename ? `/uploads/${savedFilename}` : null,
+      fileName: savedFilename || file.name,
       fileSize: buffer.length,
       mimeType,
       confidence: agentResult.detectedConfidence === "high" ? "high" : "medium",
