@@ -249,10 +249,43 @@ export default function UploadPage() {
       try {
         const formData = new FormData();
         formData.append("file", file);
-        formData.append("docType", selectedDocType);
+        if (selectedDocType) {
+          formData.append("hintDocType", selectedDocType);
+        }
 
-        const res = await fetch("/api/extract", { method: "POST", body: formData });
-        const result = await res.json();
+        // 1. Get backend URL to bypass Vercel 10s timeout
+        const cfgRes = await fetch("/api/config");
+        const cfg = await cfgRes.json();
+        
+        // 2. Fetch directly from Python API
+        const res = await fetch(`${cfg.backendUrl}/api/scan-document`, { 
+          method: "POST", 
+          body: formData 
+        });
+        
+        // 3. Convert file to Base64 in parallel for saving to profile
+        // This solves the Cloud Filesystem problem where Python on Render can't read Vercel's disk.
+        const reader = new FileReader();
+        const base64Promise = new Promise(resolve => {
+           reader.onload = () => resolve(reader.result);
+           reader.readAsDataURL(file);
+        });
+        const base64data = await base64Promise;
+
+        let result;
+        const textRes = await res.text();
+        try {
+          result = JSON.parse(textRes);
+        } catch (e) {
+          throw new Error("Server error: " + (res.status === 504 || res.status === 502 ? "AI Engine is waking up (takes ~50s on free tier). Please try uploading again." : textRes.substring(0, 80)));
+        }
+
+        if (!res.ok && !result.success) {
+           throw new Error(result.error || "Server responded with status " + res.status);
+        }
+        
+        // Use the Base64 string as the filePath so the Python bot has the raw image data later.
+        result.filePath = base64data;
 
         // Special handling for photo/signature
         if (selectedDocType === "photo" || selectedDocType === "signature") {

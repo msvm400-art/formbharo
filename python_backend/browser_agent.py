@@ -1,6 +1,8 @@
 import os
 import json
 import base64
+import tempfile
+import uuid
 from playwright.async_api import async_playwright
 from utils import resize_image, resize_pdf
 from agents.offline_ai import populate_form_mappings
@@ -191,6 +193,20 @@ async def run_browser_automation(url, profile, auto_submit=False):
                 await locator.scroll_into_view_if_needed()
 
                 if field["type"] == "file":
+                    if val and str(val).startswith("data:"):
+                        try:
+                            header, encoded = val.split(",", 1)
+                            mime = header.split(":")[1].split(";")[0]
+                            ext = mime.split("/")[-1]
+                            if ext == "jpeg": ext = "jpg"
+                            tmp_path = os.path.join(tempfile.gettempdir(), f"upload_{uuid.uuid4().hex[:8]}.{ext}")
+                            with open(tmp_path, "wb") as f:
+                                f.write(base64.b64decode(encoded))
+                            val = tmp_path
+                            log(f"Decoded profile Base64 file to: {val}")
+                        except Exception as e:
+                            log(f"Failed to decode Base64 file: {e}")
+
                     if reqs and os.path.exists(val):
                         ext = val.lower().split(".")[-1]
                         target_path = val.replace(f".{ext}", f"_resized.{ext}")
