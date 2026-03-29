@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
 import { runDocumentScannerAgent } from "@/lib/agents/documentScannerAgent";
 
 export const runtime = "nodejs";
@@ -26,15 +24,6 @@ export async function POST(request) {
       mimeType = "application/pdf";
     }
 
-    // Save file to uploads directory
-    const uploadsDir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(uploadsDir, { recursive: true });
-    const ext = (file.name?.split(".").pop() || "jpg").toLowerCase();
-    const filename = `${docType || "doc"}_${Date.now()}.${ext}`;
-    const filePath = path.join(uploadsDir, filename);
-    await writeFile(filePath, buffer);
-
-    // 🤖 Run the Document Scanner Agent
     const agentResult = await runDocumentScannerAgent(base64, mimeType, docType);
 
     if (!agentResult.success) {
@@ -44,7 +33,7 @@ export async function POST(request) {
         detectedDocType: agentResult.detectedDocType || docType,
         agentSteps: agentResult.agentSteps || [],
         data: {},
-        filePath: `/uploads/${filename}`,
+        filePath: null,
         confidence: "none",
       });
     }
@@ -60,8 +49,8 @@ export async function POST(request) {
       fieldCount,
       agentSteps: agentResult.agentSteps,
       modelUsed: agentResult.modelUsed,
-      filePath: `/uploads/${filename}`,
-      fileName: filename,
+      filePath: null,
+      fileName: file.name,
       fileSize: buffer.length,
       mimeType,
       confidence: agentResult.detectedConfidence === "high" ? "high" : "medium",
