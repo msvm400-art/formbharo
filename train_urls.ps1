@@ -1,0 +1,23 @@
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=WqI1mtdrEw4"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=gg7RHvAKydg"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=QxLani8a1ZQ"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=kiLkSUeZQZ0"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=7E9bDomUunI"
+
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=GtjsE2gkngM"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=6ecqm0qz9OQ"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=1sociqO1j5E"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=E4Z6fYh9W8g"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=Y3l5R8g2P1A"
+
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=H7kLmP0Qw2E"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=U7hJ9sK2L0P"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=9LpQwE3RtYk"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=F6Y7KJ8L9Hg"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=J8kLm2QwR5s"
+
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=2o7g7XGxQkY"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=3zZ9F2zGk1M"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=KX9vF4J9G1E"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=R4T6Y7U8I9O"
+node lib/agents/youtubeTrainer.js "https://www.youtube.com/watch?v=Z9XcVbN8M7A"
