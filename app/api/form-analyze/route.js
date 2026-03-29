@@ -11,8 +11,8 @@ export async function POST(request) {
     }
 
     // 🤖 Proxy the analysis to the Python Playwright Backend
-    // This allows the frontend to run on Vercel while the backend handles Playwright/Chromium
-    const pythonResponse = await fetch("http://127.0.0.1:8000/api/analyze-form", {
+    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    const pythonResponse = await fetch(`${backendUrl}/api/analyze-form`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url })

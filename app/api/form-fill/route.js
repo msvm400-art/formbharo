@@ -25,7 +25,8 @@ export async function POST(request) {
     let currentSessionId = sessionId || uuidv4();
 
     // 🤖 Proxy the request to the Python Playwright Backend
-    const pythonResponse = await fetch("http://127.0.0.1:8000/api/start-form-fill", {
+    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    const pythonResponse = await fetch(`${backendUrl}/api/start-form-fill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
