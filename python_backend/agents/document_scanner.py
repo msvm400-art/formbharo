@@ -111,14 +111,19 @@ async def _gemini_scan(base64_data: str, mime_type: str, hint_doc_type: str = No
 You are an expert Indian Government Document Scanner Vision AI.
 Extract all details from the provided document image/PDF into a clean JSON object.
 Document type hint: {hint_doc_type or "Unknown"}
-If it is a 10th/12th/Graduation/Diploma marksheet or certificate, dynamically extract ANY details you can find such as:
+
+For 10th/12th/Graduation/Diploma marksheets or certificates, perform a DEEP SCAN. Extract exactly these keys if found:
 "student_name", "father_name", "mother_name", "board_name", "school_name", "roll_number", "year_of_passing", "percentage", "total_marks_obtained", "total_max_marks", "division", "issue_date", "certificate_number".
+Also extract a "subjects" array containing objects with "name", "marks_obtained", "max_marks".
+
+For Category/Caste/Domicile/Income certificates, perform a DEEP SCAN. Extract exactly these keys if found:
+"category", "sub_caste", "certificate_number", "issue_date", "validity_date", "issuing_authority_name", "issuing_authority_designation", "issuing_office", "district", "state", "father_name", "annual_income".
 
 For Aadhaar: "full_name", "father_name", "dob", "gender", "aadhaar_number", "address_line1", "village_town", "district", "state", "pincode".
 
 For PAN: "full_name", "father_name", "dob", "pan_number".
 
-Ensure all dates are formatted consistently.
+Ensure all dates are formatted consistently (DD/MM/YYYY).
 Respond ONLY with the pure raw JSON object. Do NOT wrap in markdown codeblocks. Do NOT include ```json.
 """
         response = await model.generate_content_async([
@@ -151,10 +156,22 @@ Respond ONLY with the pure raw JSON object. Do NOT wrap in markdown codeblocks. 
 
 
 async def run_document_scanner_agent(base64_data: str, mime_type: str, hint_doc_type: str = None):
-    """Main entry point. Uses EasyOCR offline by default."""
-    if OFFLINE_MODE:
-        print("[Scanner] Running OFFLINE EasyOCR scan...")
-        return run_easyocr_scan(base64_data, mime_type, hint_doc_type)
-    else:
-        print("[Scanner] Running Gemini Vision scan...")
-        return await _gemini_scan(base64_data, mime_type, hint_doc_type)
+    """Main entry point. Uses EasyOCR offline by default, falls back to Gemini if it fails."""
+    
+    # Force Gemini for "Deep Scan" documents as heuristic OCR is not reliable for tabular marks and complex certificates
+    deep_scan_types = ["10th_marksheet", "10th_certificate", "12th_marksheet", "12th_certificate", 
+                       "graduation_certificate", "category_certificate", "domicile_certificate", "income_certificate"]
+    
+    force_gemini = hint_doc_type in deep_scan_types
+    
+    if OFFLINE_MODE and not force_gemini:
+        print("[Scanner] Attempting OFFLINE EasyOCR scan...")
+        result = run_easyocr_scan(base64_data, mime_type, hint_doc_type)
+        if result.get("success"):
+            return result
+        print(f"[Scanner] Offline scan failed: {result.get('error')}. Falling back to Gemini Vision...")
+    elif force_gemini:
+        print(f"[Scanner] Deep Scan requested for {hint_doc_type}. Bypassing offline mode to use high-accuracy Gemini extraction.")
+    
+    print("[Scanner] Running Gemini Vision scan...")
+    return await _gemini_scan(base64_data, mime_type, hint_doc_type)

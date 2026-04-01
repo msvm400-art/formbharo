@@ -53,14 +53,23 @@ async def scan_document(
     hintDocType: Optional[str] = Form(None)
 ):
     try:
+        print(f"[API] Received scan request: {file.filename}, type: {file.content_type}")
         content = await file.read()
+        if not content:
+            raise ValueError("Empty file uploaded")
+            
         base64_data = base64.b64encode(content).decode('utf-8')
-        mime_type = file.content_type
+        mime_type = file.content_type or "image/jpeg"
 
         result = await run_document_scanner_agent(base64_data, mime_type, hintDocType)
+        print(f"[API] Scan completed. Success: {result.get('success')}")
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_msg = f"Scanner API Error: {str(e)}"
+        print(f"[API] ERROR: {error_msg}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 if __name__ == "__main__":

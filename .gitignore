@@ -7,3 +7,15 @@ public/uploads/*
 .env.local
 .DS_Store
 *.log
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.idea/
+.vscode/
+.npm
+.eslintcache
+.cache/
+coverage/

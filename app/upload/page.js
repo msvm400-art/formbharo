@@ -529,6 +529,22 @@ function DocCard({ doc, t, onRemove }) {
       {doc.status === "error" && doc.error && (
         <div className="doc-error">{doc.error}</div>
       )}
+      
+      {doc.status === "done" && doc.data && (
+        <div className="mt-3 deep-scan-results text-xs p-2 rounded bg-opacity-50 text-[var(--text-secondary)]" style={{ background: "rgba(108,99,255,0.05)", border: "1px solid rgba(108,99,255,0.1)" }}>
+          <div className="font-semibold mb-1 text-[var(--text-primary)]">Scanned Details:</div>
+          {doc.data.student_name && <div>• Name: {doc.data.student_name}</div>}
+          {doc.data.full_name && <div>• Name: {doc.data.full_name}</div>}
+          {doc.data.roll_number && <div>• Roll No: {doc.data.roll_number}</div>}
+          {doc.data.certificate_number && <div>• Cert No: {doc.data.certificate_number}</div>}
+          {doc.data.board_name && <div className="truncate">• Board: {doc.data.board_name}</div>}
+          {doc.data.category && <div>• Category: {doc.data.category}</div>}
+          {doc.data.issuing_authority_name && <div className="truncate">• Authority: {doc.data.issuing_authority_name}</div>}
+          {doc.data.issuing_authority && <div className="truncate">• Authority: {doc.data.issuing_authority}</div>}
+          {doc.data.subjects && Array.isArray(doc.data.subjects) && <div>• Found {doc.data.subjects.length} Subjects/Marks</div>}
+        </div>
+      )}
+
       {doc.status === "done" && doc.confidence === "low" && (
         <div className="doc-warn">⚠️ Low confidence — please verify on Profile page</div>
       )}
