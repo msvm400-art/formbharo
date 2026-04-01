@@ -117,8 +117,10 @@ Respond ONLY with the pure raw JSON array. DO NOT wrap in markdown codeblocks. D
 
 
 async def run_browser_automation(url, profile, auto_submit=False):
+    headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, args=["--start-maximized"])
+        browser = await p.chromium.launch(headless=headless, args=["--start-maximized"])
+
         context = await browser.new_context(no_viewport=True)
         page = await context.new_page()
 
@@ -140,7 +142,8 @@ async def run_browser_automation(url, profile, auto_submit=False):
         raw_fields = await page.evaluate('''() => {
             const inputs = document.querySelectorAll('input:not([type=hidden]):not([type=submit]), select, textarea');
             return Array.from(inputs).map((el, i) => {
-                let label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || "";
+                let label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || "";
+
                 if(el.id) {
                     const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
                     if(l) label = label || l.innerText;
@@ -236,6 +239,70 @@ async def run_browser_automation(url, profile, auto_submit=False):
             except Exception as e:
                 log(f"Failed to fill field {idx} ('{field['label']}'): {e}")
 
+        # 🚀 AUTO-SUBMIT LOGIC
+        if auto_submit:
+            log("Auto-submit enabled. Searching for submit/next buttons...")
+            try:
+                # Common button texts in Indian gov forms
+                btn_selector = "button:not([type=button]), input[type=submit], .btn-primary, .next-btn, button:has-text('Next'), button:has-text('Submit'), button:has-text('Continue'), button:has-text('Save'), button:has-text('Proceed')"
+                submit_btn = page.locator(btn_selector).first
+                if await submit_btn.is_visible():
+                    log(f"Found submit button. Clicking...")
+                    await submit_btn.click()
+                    await page.wait_for_timeout(3000)
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                else:
+                    log("No obvious submit button found.")
+            except Exception as e:
+                log(f"Auto-submit failed: {e}")
+
+        # 🔍 DETECT & MAP NEXT STEP FIELDS
+        log("Checking for next step fields...")
+        next_fields_mapped = []
+        try:
+            raw_next_fields = await page.evaluate('''() => {
+                const inputs = document.querySelectorAll('input:not([type=hidden]):not([type=submit]), select, textarea');
+                return Array.from(inputs).map((el, i) => {
+                    let label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || "";
+                    if(el.id) {
+                        const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+                        if(l) label = label || l.innerText;
+                    }
+                    const parent = el.closest('label');
+                    if(parent && !label) label = parent.innerText;
+                    if(!label && el.previousElementSibling) label = el.previousElementSibling.innerText;
+
+                    return {
+                        idx: i,
+                        type: el.tagName.toLowerCase() === 'select' ? 'select' : el.getAttribute('type') || 'text',
+                        id: el.id,
+                        name: el.getAttribute('name'),
+                        label: (label||"").trim(),
+                        options: el.tagName.toLowerCase() === 'select' ? Array.from(el.options).map(o=>o.text) : []
+                    }
+                });
+            }''')
+
+            if raw_next_fields:
+                log(f"Found {len(raw_next_fields)} new fields. Auto-mapping for next step...")
+                # We reuse the current title/URL but could refresh them if needed
+                curr_title = await page.title()
+                next_fields_mapped = await analyze_form_advanced(curr_title, page.url, profile, raw_next_fields, None)
+                
+                # Ensure they have the correct structure for frontend (status/profileKey)
+                # If analyze_form_advanced returned a list of mappings, we need to merge them back
+                if isinstance(next_fields_mapped, list):
+                    # Merge mappings back into the raw field objects
+                    for f in raw_next_fields:
+                        m = next((m for m in next_fields_mapped if m.get("idx") == f["idx"]), {})
+                        f["profileKey"] = m.get("profileKey")
+                        f["fillValue"] = m.get("fillValue")
+                        f["status"] = "GREEN" if m.get("profileKey") else "RED"
+                        f["confidence"] = m.get("confidence", "none")
+                    next_fields_mapped = raw_next_fields
+        except Exception as e:
+            log(f"Next step mapping failed: {e}")
+
         final_screenshot = base64.b64encode(await page.screenshot(full_page=True)).decode('utf-8')
         await browser.close()
 
@@ -244,8 +311,11 @@ async def run_browser_automation(url, profile, auto_submit=False):
             "filledCount": filled,
             "auditLog": audit_log,
             "hasCaptcha": has_captcha,
-            "screenshotBase64": final_screenshot
+            "screenshotBase64": final_screenshot,
+            "nextFields": next_fields_mapped
         }
+
+
 
 
 async def run_analysis_automation(url):

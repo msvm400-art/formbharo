@@ -277,11 +277,20 @@ export default function UploadPage() {
         try {
           result = JSON.parse(textRes);
         } catch (e) {
-          throw new Error("Server error: " + (res.status === 504 || res.status === 502 ? "AI Engine is waking up (takes ~50s on free tier). Please try uploading again." : textRes.substring(0, 80)));
+          const is404 = res.status === 404;
+          const wakeUpMsg = "AI Engine is waking up (takes ~50s on free tier). Please try uploading again.";
+          const notFoundMsg = `Backend endpoint /api/scan-document not found at ${cfg.backendUrl}. Check if your Python backend is running on port 8000.`;
+          
+          let errorMsg = `Server error (${res.status}): `;
+          if (res.status === 504 || res.status === 502) errorMsg += wakeUpMsg;
+          else if (is404) errorMsg += notFoundMsg;
+          else errorMsg += textRes.substring(0, 100) || "Unknown error";
+          
+          throw new Error(errorMsg);
         }
 
-        if (!res.ok && !result.success) {
-           throw new Error(result.error || "Server responded with status " + res.status);
+        if (!res.ok || result.success === false) {
+           throw new Error(result.error || `Server responded with status ${res.status}`);
         }
         
         // Use the Base64 string as the filePath so the Python bot has the raw image data later.

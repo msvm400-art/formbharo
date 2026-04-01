@@ -104,11 +104,17 @@ export default function FillPage() {
         setSessionId(data.sessionId);
         setHasCaptcha(data.hasCaptcha || false);
         
-        if (data.nextFields) {
+        if (data.nextFields && data.nextFields.length > 0) {
           setFields(data.nextFields);
           setCurrentStepIndex(prev => prev + 1);
           setManualValues({});
           setStep("analyzed");
+          
+          // 🚀 AUTO-CONTINUE (Turbo Mode)
+          if (autoSubmit || overrideAutoSubmit) {
+            console.log("[FillPage] Turbo Mode: Auto-starting next step...");
+            setTimeout(() => startFill(), 1500);
+          }
         } else {
           setStep("done_step");
         }

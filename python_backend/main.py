@@ -1,5 +1,6 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from typing import Optional
 from pydantic import BaseModel
 import uvicorn
@@ -27,6 +28,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Logger middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"[API] Incoming: {request.method} {request.url.path}")
+    response = await call_next(request)
+    print(f"[API] Outgoing Status: {response.status_code}")
+    return response
+
+@app.get("/")
+async def root():
+    return {"message": "FormBharo AI Backend is running"}
 
 @app.post("/api/start-form-fill")
 async def start_form_fill(req: BrowserRequest):
@@ -71,6 +84,15 @@ async def scan_document(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=error_msg)
 
+
+# Catch-all route for better 404 debugging
+@app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def catch_all(request: Request, path_name: str):
+    print(f"[API] 404 ERROR: {request.method} {request.url.path}")
+    return JSONResponse(
+        status_code=404,
+        content={"success": False, "error": f"Endpoint '/{path_name}' not found on Python Backend."}
+    )
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

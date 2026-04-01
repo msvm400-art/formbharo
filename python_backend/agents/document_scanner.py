@@ -5,6 +5,13 @@ import json
 from dotenv import load_dotenv
 from agents.offline_ai import offline_scan_document
 
+try:
+    import fitz
+    HAS_FITZ = True
+except ImportError:
+    HAS_FITZ = False
+
+
 env_path = os.path.join(os.path.dirname(__file__), "..", "..", ".env.local")
 load_dotenv(env_path)
 
@@ -43,11 +50,13 @@ def run_easyocr_scan(base64_data: str, mime_type: str, hint_doc_type: str = None
 
         # Handle PDF: convert first page to image using PyMuPDF
         if mime_type == "application/pdf":
+            if not HAS_FITZ:
+                return {"success": False, "error": "PyMuPDF (fitz) not installed. Cannot process PDF offline.", "agentSteps": agent_steps}
             try:
-                import fitz
                 doc = fitz.open(stream=raw_bytes, filetype="pdf")
                 page = doc.load_page(0)
                 pix = page.get_pixmap(dpi=200)
+
                 img_bytes = pix.tobytes("png")
                 image_array = img_bytes
             except Exception as e:
@@ -123,6 +132,8 @@ For Aadhaar: "full_name", "father_name", "dob", "gender", "aadhaar_number", "add
 
 For PAN: "full_name", "father_name", "dob", "pan_number".
 
+For EWS/Income/Other Certificates: "full_name", "father_name", "certificate_number", "issue_date", "validity_year", "issuing_authority_name", "district", "state".
+
 Ensure all dates are formatted consistently (DD/MM/YYYY).
 Respond ONLY with the pure raw JSON object. Do NOT wrap in markdown codeblocks. Do NOT include ```json.
 """
@@ -160,7 +171,8 @@ async def run_document_scanner_agent(base64_data: str, mime_type: str, hint_doc_
     
     # Force Gemini for "Deep Scan" documents as heuristic OCR is not reliable for tabular marks and complex certificates
     deep_scan_types = ["10th_marksheet", "10th_certificate", "12th_marksheet", "12th_certificate", 
-                       "graduation_certificate", "category_certificate", "domicile_certificate", "income_certificate"]
+                       "graduation_certificate", "category_certificate", "domicile_certificate", "income_certificate", "ews_certificate"]
+
     
     force_gemini = hint_doc_type in deep_scan_types
     

@@ -157,6 +157,11 @@ def guess_field_mapping(label, field_type, profile):
         return "personal.religion"
     if "marital" in label_lower or "वैवाहिक" in label_lower:
         return "personal.marital_status"
+    if "nationality" in label_lower or "राष्ट्रीयता" in label_lower:
+        return "personal.nationality"
+    if "domicile" in label_lower or "निवास" in label_lower:
+        return "personal.domicile_state"
+
         
     # 3. ID Numbers
     if "aadhar" in label_lower or "aadhaar" in label_lower:
@@ -171,7 +176,19 @@ def guess_field_mapping(label, field_type, profile):
         return "contact.email"
         
     # 5. Address
-    if "address" in label_lower:
+    if "permanent" in label_lower or "स्थायी" in label_lower:
+        if "address" in label_lower: return "contact.permanent_address.line1"
+        if "state" in label_lower: return "contact.permanent_address.state"
+        if "district" in label_lower: return "contact.permanent_address.district"
+        if "pin" in label_lower: return "contact.permanent_address.pincode"
+        
+    if "correspondence" in label_lower or "present" in label_lower or "पत्राचार" in label_lower or "वर्तमान" in label_lower:
+        if "address" in label_lower: return "contact.present_address.line1"
+        if "state" in label_lower: return "contact.present_address.state"
+        if "district" in label_lower: return "contact.present_address.district"
+        if "pin" in label_lower: return "contact.present_address.pincode"
+
+    if "address" in label_lower or "पता" in label_lower:
         return "contact.permanent_address.line1"
     if "state" in label_lower or "राज्य" in label_lower:
         return "contact.permanent_address.state"
@@ -179,6 +196,7 @@ def guess_field_mapping(label, field_type, profile):
         return "contact.permanent_address.district"
     if "pin" in label_lower or "zip" in label_lower or "पिन" in label_lower:
         return "contact.permanent_address.pincode"
+
         
     # 6. Education 10th
     if "10th" in label_lower or "matric" in label_lower or "high school" in label_lower:
