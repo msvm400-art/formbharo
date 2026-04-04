@@ -2,6 +2,8 @@
 import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import { runDocumentScannerAgent } from "@/lib/agents/documentScannerAgent";
+
 import { DOCUMENT_TYPES } from "@/lib/profileSchema";
 import { defaultProfile } from "@/lib/profileSchema";
 
@@ -20,7 +22,8 @@ const LANG = {
     chooseFile: "Choose File",
     docList: "Uploaded Documents",
     noDoc: "No documents uploaded yet",
-    tip: "💡 Tip: Upload Aadhaar card first for best results",
+    tip: "💡 Tip: Upload Aadhaar card first for best results. If you see errors, try clearing browser cache and restarting the backend.",
+
   },
   hi: {
     title: "दस्तावेज़ अपलोड करें",
@@ -78,15 +81,18 @@ function mergeProfileData(base, docType, extractedData) {
     case "10th_marksheet":
     case "10th_certificate":
       if (!profile.personal.full_name) set("personal.full_name", d.student_name);
-      if (!profile.personal.father_name) set("personal.father_name", d.father_name);
+      if (!profile.personal.father_name) set("personal.father_name", d.father_name || d.full_name);
       if (!profile.personal.mother_name) set("personal.mother_name", d.mother_name);
       profile.education[0] = {
         ...profile.education[0],
         board: d.board_name || profile.education[0].board,
+        board_type: d.board_type || profile.education[0].board_type,
         school: d.school_name || profile.education[0].school,
         roll_no: d.roll_number || profile.education[0].roll_no,
+        month_of_passing: d.month_of_passing || profile.education[0].month_of_passing,
         year_of_passing: d.year_of_passing || profile.education[0].year_of_passing,
         percentage: d.percentage || profile.education[0].percentage,
+        cgpa: d.cgpa || profile.education[0].cgpa,
         division: d.division || profile.education[0].division,
         marks_obtained: d.total_marks_obtained || profile.education[0].marks_obtained,
         total_marks: d.total_max_marks || profile.education[0].total_marks,
@@ -100,11 +106,14 @@ function mergeProfileData(base, docType, extractedData) {
       profile.education[1] = {
         ...profile.education[1],
         board: d.board_name || profile.education[1].board,
+        board_type: d.board_type || profile.education[1].board_type,
         school: d.school_name || profile.education[1].school,
         stream: d.stream || profile.education[1].stream,
         roll_no: d.roll_number || profile.education[1].roll_no,
+        month_of_passing: d.month_of_passing || profile.education[1].month_of_passing,
         year_of_passing: d.year_of_passing || profile.education[1].year_of_passing,
         percentage: d.percentage || profile.education[1].percentage,
+        cgpa: d.cgpa || profile.education[1].cgpa,
         division: d.division || profile.education[1].division,
         marks_obtained: d.total_marks_obtained || profile.education[1].marks_obtained,
         total_marks: d.total_max_marks || profile.education[1].total_marks,
@@ -121,12 +130,15 @@ function mergeProfileData(base, docType, extractedData) {
         enrollment_no: d.enrollment_number || profile.education[2].enrollment_no,
         degree: d.degree_name || profile.education[2].degree,
         branch: d.branch_specialization || profile.education[2].branch,
+        month_of_passing: d.month_of_passing || profile.education[2].month_of_passing,
         year_of_passing: d.year_of_passing || profile.education[2].year_of_passing,
         percentage: d.percentage || profile.education[2].percentage,
+        cgpa: d.cgpa || profile.education[2].cgpa,
         division: d.division_class || profile.education[2].division,
         certificate_number: d.certificate_number || profile.education[2].certificate_number,
         degree_number: d.degree_number || profile.education[2].degree_number,
         issue_date: d.issue_date || profile.education[2].issue_date,
+        signatory_title: d.signatory_title || profile.education[2].signatory_title,
       };
       break;
     case "category_certificate":
@@ -138,12 +150,18 @@ function mergeProfileData(base, docType, extractedData) {
         category_name: d.category || profile.certificates.category.category_name,
         sub_caste: d.sub_caste || d.jati_name || profile.certificates.category.sub_caste,
         certificate_number: d.certificate_number || profile.certificates.category.certificate_number,
+        reference_number: d.reference_number || profile.certificates.category.reference_number,
+        token_number: d.token_number || profile.certificates.category.token_number,
         issue_date: d.issue_date || profile.certificates.category.issue_date,
         validity_date: d.validity_date || profile.certificates.category.validity_date,
-        issuing_authority: (d.issuing_authority_name || "") + (d.issuing_authority_designation ? ", " + d.issuing_authority_designation : "") || profile.certificates.category.issuing_authority,
+        issuing_authority: d.issuing_authority_name || profile.certificates.category.issuing_authority,
+        issuing_authority_designation: d.issuing_authority_designation || profile.certificates.category.issuing_authority_designation,
         issuing_office: d.issuing_office || profile.certificates.category.issuing_office,
         district: d.district || profile.certificates.category.district,
         state: d.state || profile.certificates.category.state,
+        mother_name: d.mother_name || profile.certificates.category.mother_name,
+        father_name: d.father_name || profile.certificates.category.father_name,
+        address: d.address || profile.certificates.category.address,
       };
       break;
     case "domicile_certificate":
@@ -169,6 +187,19 @@ function mergeProfileData(base, docType, extractedData) {
         district: d.district || profile.certificates.income.district,
         state: d.state || profile.certificates.income.state,
       };
+      break;
+    case "computer_certificate":
+      profile.certificates.other.push({ 
+        title: d.course_name || "Computer Certificate",
+        course: d.course_name,
+        duration: d.duration,
+        grade: d.grade,
+        center: d.center_name,
+        issue_date: d.issue_date,
+        certificate_number: d.certificate_number,
+        _filePath: extractedData._filePath 
+      });
+      break;
       break;
     case "photo":
       profile.documents.photo.original_path = extractedData._filePath || "";
@@ -247,54 +278,23 @@ export default function UploadPage() {
       setUploadedDocs((prev) => [...prev, pendingDoc]);
 
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        if (selectedDocType) {
-          formData.append("hintDocType", selectedDocType);
-        }
-
-        // 1. Get backend URL to bypass Vercel 10s timeout
-        const cfgRes = await fetch("/api/config");
-        const cfg = await cfgRes.json();
-        
-        // 2. Fetch directly from Python API
-        const res = await fetch(`${cfg.backendUrl}/api/scan-document`, { 
-          method: "POST", 
-          body: formData 
-        });
-        
-        // 3. Convert file to Base64 in parallel for saving to profile
-        // This solves the Cloud Filesystem problem where Python on Render can't read Vercel's disk.
         const reader = new FileReader();
         const base64Promise = new Promise(resolve => {
-           reader.onload = () => resolve(reader.result);
+           reader.onload = () => resolve(reader.result.split(',')[1]); // Get just the Base64 part
            reader.readAsDataURL(file);
         });
         const base64data = await base64Promise;
 
-        let result;
-        const textRes = await res.text();
-        try {
-          result = JSON.parse(textRes);
-        } catch (e) {
-          const is404 = res.status === 404;
-          const wakeUpMsg = "AI Engine is waking up (takes ~50s on free tier). Please try uploading again.";
-          const notFoundMsg = `Backend endpoint /api/scan-document not found at ${cfg.backendUrl}. Check if your Python backend is running on port 8000.`;
-          
-          let errorMsg = `Server error (${res.status}): `;
-          if (res.status === 504 || res.status === 502) errorMsg += wakeUpMsg;
-          else if (is404) errorMsg += notFoundMsg;
-          else errorMsg += textRes.substring(0, 100) || "Unknown error";
-          
-          throw new Error(errorMsg);
-        }
-
-        if (!res.ok || result.success === false) {
-           throw new Error(result.error || `Server responded with status ${res.status}`);
+        // 🤖 Unified Agent Call
+        const result = await runDocumentScannerAgent(base64data, file.type, selectedDocType);
+        
+        if (!result.success) {
+           throw new Error(result.error || "Extraction failed");
         }
         
-        // Use the Base64 string as the filePath so the Python bot has the raw image data later.
-        result.filePath = base64data;
+        // Use the Base64 string as the filePath
+        result.filePath = `data:${file.type};base64,${base64data}`;
+
 
         // Special handling for photo/signature
         if (selectedDocType === "photo" || selectedDocType === "signature") {
@@ -550,6 +550,8 @@ function DocCard({ doc, t, onRemove }) {
           {doc.data.category && <div>• Category: {doc.data.category}</div>}
           {doc.data.issuing_authority_name && <div className="truncate">• Authority: {doc.data.issuing_authority_name}</div>}
           {doc.data.issuing_authority && <div className="truncate">• Authority: {doc.data.issuing_authority}</div>}
+          {doc.data.reference_number && <div>• Ref No: {doc.data.reference_number}</div>}
+          {doc.data.token_number && <div>• Token: {doc.data.token_number}</div>}
           {doc.data.subjects && Array.isArray(doc.data.subjects) && <div>• Found {doc.data.subjects.length} Subjects/Marks</div>}
         </div>
       )}

@@ -10,6 +10,7 @@ export async function POST(request) {
     const {
       url,
       profile,
+      fieldMappings,
       sessionId,
       autoSubmit = false,
     } = await request.json();
@@ -25,14 +26,15 @@ export async function POST(request) {
     let currentSessionId = sessionId || uuidv4();
 
     // 🤖 Proxy the request to the Python Playwright Backend
-    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8080";
     const pythonResponse = await fetch(`${backendUrl}/api/start-form-fill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url,
         profile,
-        autoSubmit
+        autoSubmit,
+        fieldMappings
       })
     });
 

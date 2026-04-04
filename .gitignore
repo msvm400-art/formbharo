@@ -19,3 +19,12 @@ ENV/
 .eslintcache
 .cache/
 coverage/
+# Large training documents (750MB+)
+doc datsheet/
+python_backend/data/
+python_backend/test_*.txt
+*.jpg
+*.png
+*.pdf
+!public/
+!app/

@@ -19,6 +19,7 @@ class BrowserRequest(BaseModel):
     url: str
     profile: dict
     autoSubmit: bool = False
+    fieldMappings: Optional[list] = None
 
 # Allow CORS for Next.js frontend
 app.add_middleware(
@@ -44,7 +45,37 @@ async def root():
 @app.post("/api/start-form-fill")
 async def start_form_fill(req: BrowserRequest):
     try:
-        return await run_browser_automation(req.url, req.profile, req.autoSubmit)
+        return await run_browser_automation(req.url, req.profile, req.autoSubmit, req.fieldMappings)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/save-feedback")
+async def save_feedback(req: dict):
+    try:
+        from agents.offline_ai import LEARNING_FILE
+        import json
+        import os
+        
+        data = req.get("feedback", {})
+        if not data: return {"success": False, "error": "No data"}
+        
+        # Load existing
+        store = {}
+        if os.path.exists(LEARNING_FILE):
+            with open(LEARNING_FILE, "r", encoding="utf-8") as f:
+                store = json.load(f)
+        
+        # Merge form mappings
+        if "form_mappings" not in store: store["form_mappings"] = {}
+        store["form_mappings"].update(data.get("form_mappings", {}))
+        
+        # Save
+        os.makedirs(os.path.dirname(LEARNING_FILE), exist_ok=True)
+        with open(LEARNING_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2)
+            
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -95,4 +126,5 @@ async def catch_all(request: Request, path_name: str):
     )
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+

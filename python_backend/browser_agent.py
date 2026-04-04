@@ -56,6 +56,38 @@ async def get_yt_knowledge(url, page_title):
     return specialized_rules
 
 
+async def save_learning_feedback(field_mappings):
+    """Save user-corrected mappings to the learning store."""
+    if not field_mappings: return
+    
+    from agents.offline_ai import LEARNING_FILE
+    new_rules = {}
+    for f in field_mappings:
+        label = (f.get("label") or f.get("name", "")).lower()
+        profile_key = f.get("profileKey")
+        # Only learn if it's a clear label -> key mapping
+        if label and profile_key and not profile_key.startswith("LITERAL:"):
+            new_rules[label] = profile_key
+            
+    if not new_rules: return
+    
+    try:
+        store = {}
+        if os.path.exists(LEARNING_FILE):
+            with open(LEARNING_FILE, "r", encoding="utf-8") as f:
+                store = json.load(f)
+        
+        if "form_mappings" not in store: store["form_mappings"] = {}
+        store["form_mappings"].update(new_rules)
+        
+        os.makedirs(os.path.dirname(LEARNING_FILE), exist_ok=True)
+        with open(LEARNING_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2)
+        print(f"[Learning] Saved {len(new_rules)} mappings to store.")
+    except Exception as e:
+        print(f"[Learning] Error saving feedback: {e}")
+
+
 async def analyze_form_advanced(page_title, page_url, profile, raw_fields, screenshot_b64):
     """Analyze form fields and return mappings.
     Uses offline heuristic engine by default. Falls back to Gemini if OFFLINE_MODE is False."""
@@ -116,7 +148,14 @@ Respond ONLY with the pure raw JSON array. DO NOT wrap in markdown codeblocks. D
         return populate_form_mappings(raw_fields, profile)
 
 
-async def run_browser_automation(url, profile, auto_submit=False):
+async def run_browser_automation(url, profile, auto_submit=False, field_mappings=None):
+    """Main entry point for form filling."""
+    print(f"[Agent] Starting automation for: {url}")
+    
+    # 0. Save Learning Feedback if provided
+    if field_mappings:
+        await save_learning_feedback(field_mappings)
+    
     headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless, args=["--start-maximized"])
@@ -166,14 +205,19 @@ async def run_browser_automation(url, profile, auto_submit=False):
         screenshot_bytes = await page.screenshot()
         screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
 
-        mode_label = "OFFLINE heuristic" if OFFLINE_MODE else "Gemini AI"
-        log(f"Found {len(raw_fields)} fields. Sending to {mode_label} engine for mapping...")
-        mappings = await analyze_form_advanced(page_title, url, profile, raw_fields, screenshot_b64)
+        # 🧠 MAPPING LOGIC
+        if field_mappings:
+            log("Using user-provided field mappings...")
+            mappings = field_mappings
+        else:
+            mode_label = "OFFLINE heuristic" if OFFLINE_MODE else "Gemini AI"
+            log(f"Found {len(raw_fields)} fields. Sending to {mode_label} engine for mapping...")
+            mappings = await analyze_form_advanced(page_title, url, profile, raw_fields, screenshot_b64)
 
         if not isinstance(mappings, list):
             mappings = []
 
-        log(f"Engine returned {len(mappings)} mappings.")
+        log(f"Engine/User provided {len(mappings)} mappings.")
 
         filled = 0
         for m in mappings:

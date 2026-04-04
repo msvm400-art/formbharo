@@ -1,1 +1,58 @@
-{}
+{
+  "ssb": {
+    "exam_keywords": ["ssb", "ssbrectt", "sashastra seema bal", "head constable"],
+    "filling_rules": [
+      "Select 'Head Constable (Communication)' or appropriate post as per profile.",
+      "Check 'Yes' for community belonging (Gorkhas/Dogras) only if explicitly in profile.",
+      "Identification Mark 1 and 2 are mandatory. Use Mole/Cut marks from profile.",
+      "Identity Card Type and Number must match the selected document.",
+      "Educational table: Fill Matric, Inter, Diploma, Graduation, PG in order."
+    ],
+    "photo_signature_rules": "Photo < 500KB (JPG), Signature < 200KB (JPG on white paper).",
+    "document_rules": "All certificates should be in PDF or JPG as per site prompt."
+  },
+  "bihar_serviceplus": {
+    "exam_keywords": ["serviceonline.bihar.gov.in", "rtps", "residence certificate", "bihar", "aadhaar"],
+    "filling_rules": [
+      "Select 'Prakhand' (Block) and 'Anumandal' (Sub-division) based on profile address.",
+      "Select 'Type of Local Body' (Gram Panchayat, Nagar Nigam, etc.) correctly.",
+      "Check 'I Agree' checkbox at the end of the form.",
+      "Use Hindi translations where labels are bilingual.",
+      "Upload 'Self attested photograph' to the specific file input."
+    ],
+    "photo_signature_rules": "Self-attested photo usually < 100KB. JPG format.",
+    "document_rules": "Aadhaar number is optional but improves processing."
+  },
+  "bihar_caste": {
+    "exam_keywords": ["jaati", "caste certificate", "bihar"],
+    "filling_rules": [
+      "Map 'Category' and 'Caste' specific selection accurately.",
+      "If 'Caste Serial Number' is explicitly required, map from profile.",
+      "Upload applicant photograph as required."
+    ]
+  },
+  "bihar_income": {
+    "exam_keywords": ["income certificate", "aaya", "bihar"],
+    "filling_rules": [
+      "Manually break down income into Govt, Agriculture, Business, and Other sources.",
+      "Aggregate values to match 'Total Income' field.",
+      "Ensure the 'Income sources' match the supporting documents (Salary slip/ITR)."
+    ]
+  },
+  "bihar_ncl": {
+    "exam_keywords": ["non-creamy layer", "ncl", "obc", "bc", "ebc", "bihar"],
+    "filling_rules": [
+      "Identify if 'State Govt' or 'Central Govt' purpose is selected.",
+      "NCL requires detailed parent/husband status (Govt Service, Salary, etc.).",
+      "Check multiple 'Yes/No' radio buttons for creamy layer criteria."
+    ]
+  },
+  "bihar_character": {
+    "exam_keywords": ["character certificate", "aacharan", "bihar police"],
+    "filling_rules": [
+      "Fill 'Last 2 years domicile details' table systematically from profile history.",
+      "Ensure 'From' and 'To' dates are consecutive and cover exactly 2 years.",
+      "Match 'Police Station' (Thana) exactly with site's dropdown options."
+    ]
+  }
+}

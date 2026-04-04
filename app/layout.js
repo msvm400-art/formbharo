@@ -1,4 +1,5 @@
 import "./globals.css";
+import KeepAlive from "@/components/KeepAlive";
 
 export const metadata = {
   title: "FormBharo — AI Form-Filling Agent",
@@ -9,7 +10,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        <KeepAlive />
+        {children}
+      </body>
     </html>
   );
 }
