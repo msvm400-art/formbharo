@@ -72,11 +72,11 @@ export default function Home() {
           </p>
           <div className="hero-actions">
             <Link href="/upload" className="btn btn-primary btn-lg">
-              {lang === "hi" ? "⬆️ दस्तावेज़ अपलोड करें" : "⬆️ Upload Documents"}
+              {lang === "hi" ? "⬆️ दस्तावेज़ एक साथ अपलोड करें" : "⬆️ Upload All Documents"}
             </Link>
-            <a href="#how-it-works" className="btn btn-secondary btn-lg">
-              {lang === "hi" ? "यह कैसे काम करता है?" : "How it works"}
-            </a>
+            <Link href="/manual" className="btn btn-secondary btn-lg">
+              {lang === "hi" ? "✍️ मैन्युअल रूप से प्रोफ़ाइल बनाएं" : "✍️ Build Profile Manually (Guided)"}
+            </Link>
           </div>
 
           {/* STATS */}

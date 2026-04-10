@@ -3,13 +3,86 @@ import json
 import base64
 import tempfile
 import uuid
+import asyncio
 from playwright.async_api import async_playwright
-from utils import resize_image, resize_pdf
+from utils import process_file
 from agents.offline_ai import populate_form_mappings
 from dotenv import load_dotenv
 
 env_path = os.path.join(os.path.dirname(__file__), "..", ".env.local")
 load_dotenv(env_path)
+
+# ─────────────────────────────────────────────────────────────────
+# GLOBAL SESSION STORE
+# ─────────────────────────────────────────────────────────────────
+SESSIONS = {}  # { sessionId: BrowserSession }
+
+class BrowserSession:
+    def __init__(self, session_id, playwright, browser, context, page):
+        self.session_id = session_id
+        self.playwright = playwright
+        self.browser = browser
+        self.context = context
+        self.page = page
+        self.last_screenshot = None
+        self.fields = []
+
+    async def close(self):
+        await self.page.close()
+        await self.context.close()
+        await self.browser.close()
+        await self.playwright.stop()
+
+async def get_or_create_session(session_id=None, url=None):
+    global SESSIONS
+    if session_id and session_id in SESSIONS:
+        return SESSIONS[session_id]
+
+    new_id = session_id or str(uuid.uuid4())
+    pw = await async_playwright().start()
+    headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
+    browser = await pw.chromium.launch(headless=headless, args=["--start-maximized"])
+    context = await browser.new_context(no_viewport=True)
+    page = await context.new_page()
+    
+    session = BrowserSession(new_id, pw, browser, context, page)
+    SESSIONS[new_id] = session
+    
+    if url:
+        await page.goto(url, wait_until="networkidle", timeout=60000)
+    
+    return session
+
+async def close_session(session_id):
+    if session_id in SESSIONS:
+        await SESSIONS[session_id].close()
+        del SESSIONS[session_id]
+        return True
+    return False
+
+async def navigate_to(session_id, url):
+    if session_id not in SESSIONS: return None
+    page = SESSIONS[session_id].page
+    await page.goto(url, wait_until="networkidle", timeout=60000)
+    return await page.screenshot()
+
+async def go_back(session_id):
+    if session_id not in SESSIONS: return None
+    page = SESSIONS[session_id].page
+    await page.go_back()
+    return await page.screenshot()
+
+async def go_forward(session_id):
+    if session_id not in SESSIONS: return None
+    page = SESSIONS[session_id].page
+    await page.go_forward()
+    return await page.screenshot()
+
+async def reload_page(session_id):
+    if session_id not in SESSIONS: return None
+    page = SESSIONS[session_id].page
+    await page.reload()
+    return await page.screenshot()
 
 # ─────────────────────────────────────────────────────────────────
 # MODE CONTROL: Set to True for 100% offline. False = use Gemini.
@@ -148,41 +221,216 @@ Respond ONLY with the pure raw JSON array. DO NOT wrap in markdown codeblocks. D
         return populate_form_mappings(raw_fields, profile)
 
 
-async def run_browser_automation(url, profile, auto_submit=False, field_mappings=None):
-    """Main entry point for form filling."""
-    print(f"[Agent] Starting automation for: {url}")
+async def detect_requirements_advanced(page, field_idx):
+    """Scan the area around a file input to detect size/format rules."""
+    try:
+        rules = await page.evaluate(f'''(idx) => {{
+            const inputs = document.querySelectorAll('input[type=file]');
+            const el = inputs[idx];
+            if (!el) return null;
+
+            // Search text in parent, previous siblings, and nearby labels
+            let text = "";
+            let curr = el;
+            for(let i=0; i<3; i++) {{
+                if(!curr) break;
+                text += " " + curr.innerText + " " + (curr.parentElement ? curr.parentElement.innerText : "");
+                curr = curr.parentElement;
+            }}
+
+            const combinedText = text.toLowerCase();
+            const minSize = combinedText.match(/(?:min|at least)\s*(\d+)\s*(kb|mb)/);
+            const maxSize = combinedText.match(/(?:max|up to|below)\s*(\d+)\s*(kb|mb)/);
+            const dimensions = combinedText.match(/(\d+)\s*(?:x|\*)\s*(\d+)\s*(cm|px|mm)/);
+            
+            return {{
+                min_kb: minSize ? (minSize[2] === 'kb' ? parseInt(minSize[1]) : parseInt(minSize[1]) * 1024) : null,
+                max_kb: maxSize ? (maxSize[2] === 'kb' ? parseInt(maxSize[1]) : parseInt(maxSize[1]) * 1024) : null,
+                width: dimensions ? parseInt(dimensions[1]) : null,
+                height: dimensions ? parseInt(dimensions[2]) : null,
+                unit: dimensions ? dimensions[3] : 'px'
+            }};
+        }}''', field_idx)
+        return rules
+    except:
+        return None
+
+
+async def click_coordinates(session_id, x, y):
+    if session_id not in SESSIONS: return False
+    page = SESSIONS[session_id].page
+    await page.mouse.click(x, y)
+    return True
+
+
+async def run_browser_automation(url, profile, auto_submit=False, field_mappings=None, session_id=None):
+    """Main entry point for form filling using persistent sessions."""
+    print(f"[Agent] Starting automation for: {url} (Session: {session_id})")
     
     # 0. Save Learning Feedback if provided
     if field_mappings:
         await save_learning_feedback(field_mappings)
     
-    headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless, args=["--start-maximized"])
+    session = await get_or_create_session(session_id, url)
+    page = session.page
+    
+    audit_log = []
+    def log(msg):
+        print(f"[Agent] {msg}")
+        audit_log.append(msg)
 
-        context = await browser.new_context(no_viewport=True)
-        page = await context.new_page()
-
-        audit_log = []
-        def log(msg):
-            print(f"[Agent] {msg}")
-            audit_log.append(msg)
-
+    # If new session, we already navigated. If existing, we might need to navigate if URL changed
+    if url and page.url != url:
         log(f"Navigating to {url}")
         await page.goto(url, wait_until="networkidle", timeout=60000)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1000)
 
-        page_title = await page.title()
+    page_title = await page.title()
 
-        has_captcha = await page.evaluate("!!document.querySelector('.g-recaptcha, .h-captcha, iframe[src*=\"captcha\"]')")
-        if has_captcha:
-            log("CAPTCHA detected on page.")
+    has_captcha = await page.evaluate("!!document.querySelector('.g-recaptcha, .h-captcha, iframe[src*=\"captcha\"]')")
+    if has_captcha:
+        log("CAPTCHA detected on page.")
 
-        raw_fields = await page.evaluate('''() => {
+    raw_fields = await page.evaluate('''() => {
+        const inputs = document.querySelectorAll('input:not([type=hidden]):not([type=submit]), select, textarea');
+        return Array.from(inputs).map((el, i) => {
+            let label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || "";
+
+            if(el.id) {
+                const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+                if(l) label = label || l.innerText;
+            }
+            const parent = el.closest('label');
+            if(parent && !label) label = parent.innerText;
+            if(!label && el.previousElementSibling) label = el.previousElementSibling.innerText;
+
+            return {
+                idx: i,
+                type: el.tagName.toLowerCase() === 'select' ? 'select' : el.getAttribute('type') || 'text',
+                id: el.id,
+                name: el.getAttribute('name'),
+                label: (label||"").trim(),
+                options: el.tagName.toLowerCase() === 'select' ? Array.from(el.options).map(o=>o.text) : []
+            }
+        });
+    }''')
+
+    screenshot_bytes = await page.screenshot()
+    screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+
+    # 🧠 MAPPING LOGIC
+    if field_mappings:
+        log("Using user-provided field mappings...")
+        mappings = field_mappings
+    else:
+        mode_label = "OFFLINE heuristic" if OFFLINE_MODE else "Gemini AI"
+        log(f"Found {len(raw_fields)} fields. Sending to {mode_label} engine for mapping...")
+        mappings = await analyze_form_advanced(page_title, url, profile, raw_fields, screenshot_b64)
+
+    if not isinstance(mappings, list):
+        mappings = []
+
+    log(f"Engine/User provided {len(mappings)} mappings.")
+
+    filled = 0
+    for m in mappings:
+        idx = m.get("idx")
+        val = m.get("fillValue")
+        reqs = m.get("resizeReqs")
+
+        if val is None or val == "":
+            continue
+
+        field = next((f for f in raw_fields if f["idx"] == idx), None)
+        if not field: continue
+
+        locator = None
+        if field["id"]: locator = page.locator(f"#{field['id']}").first
+        elif field["name"]: locator = page.locator(f"[name='{field['name']}']").first
+        else: locator = page.locator("input, select, textarea").nth(idx)
+
+        try:
+            await locator.scroll_into_view_if_needed()
+
+            if field["type"] == "file":
+                if val and str(val).startswith("data:"):
+                    try:
+                        header, encoded = val.split(",", 1)
+                        mime = header.split(":")[1].split(";")[0]
+                        ext = mime.split("/")[-1]
+                        if ext == "jpeg": ext = "jpg"
+                        tmp_path = os.path.join(tempfile.gettempdir(), f"upload_{uuid.uuid4().hex[:8]}.{ext}")
+                        with open(tmp_path, "wb") as f:
+                            f.write(base64.b64decode(encoded))
+                        val = tmp_path
+                        log(f"Decoded profile Base64 file to: {val}")
+                    except Exception as e:
+                        log(f"Failed to decode Base64 file: {e}")
+
+                # 🕵️ AUTO-DETECT REQUIREMENTS
+                if not reqs:
+                    log(f"Scanning page for requirements for: {field['label']}")
+                    reqs = await detect_requirements_advanced(page, mappings.index(m))
+                    if reqs:
+                        log(f"Auto-detected reqs: {reqs}")
+
+                if os.path.exists(val):
+                    ext = val.lower().split(".")[-1]
+                    # Enforce formats: Photo/Signature -> JPG, Others -> PDF
+                    is_photo = any(kw in (field['label'] or "").lower() for kw in ["photo", "signature", "thumb", "sign"])
+                    target_ext = "jpg" if is_photo else "pdf"
+                    target_path = val.replace(f".{ext}", f"_processed.{target_ext}")
+                    
+                    log(f"Processing file {val} -> {target_ext} (Reqs: {reqs})")
+                    processed_path = process_file(val, target_path, reqs or {}, is_photo=is_photo)
+                    
+                    if processed_path and os.path.exists(processed_path):
+                        await locator.set_input_files(processed_path)
+                        log(f"Uploaded processed file to: {field['label']}")
+                    else:
+                        log(f"Processing failed, trying original file: {val}")
+                        await locator.set_input_files(val)
+                else:
+                    log(f"Skipped file upload (file not found): {val}")
+            elif field["type"] == "select":
+                await locator.select_option(label=val)
+                log(f"Selected '{val}' for '{field['label']}'")
+            elif field["type"] in ["radio", "checkbox"]:
+                await locator.check()
+                log(f"Checked '{field['label']}'")
+            else:
+                await locator.fill(str(val))
+                log(f"Filled '{field['label']}' = '{val}'")
+            filled += 1
+            await page.wait_for_timeout(150)
+        except Exception as e:
+            log(f"Failed to fill field {idx} ('{field['label']}'): {e}")
+
+    # 🚀 AUTO-SUBMIT LOGIC
+    if auto_submit:
+        log("Auto-submit enabled. Searching for submit/next buttons...")
+        try:
+            # Common button texts in Indian gov forms
+            btn_selector = "button:not([type=button]), input[type=submit], .btn-primary, .next-btn, button:has-text('Next'), button:has-text('Submit'), button:has-text('Continue'), button:has-text('Save'), button:has-text('Proceed')"
+            submit_btn = page.locator(btn_selector).first
+            if await submit_btn.is_visible():
+                log(f"Found submit button. Clicking...")
+                await submit_btn.click()
+                await page.wait_for_timeout(3000)
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            else:
+                log("No obvious submit button found.")
+        except Exception as e:
+            log(f"Auto-submit failed: {e}")
+
+    # 🔍 DETECT & MAP NEXT STEP FIELDS
+    log("Checking for next step fields...")
+    next_fields_mapped = []
+    try:
+        raw_next_fields = await page.evaluate('''() => {
             const inputs = document.querySelectorAll('input:not([type=hidden]):not([type=submit]), select, textarea');
             return Array.from(inputs).map((el, i) => {
                 let label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || "";
-
                 if(el.id) {
                     const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
                     if(l) label = label || l.innerText;
@@ -202,161 +450,38 @@ async def run_browser_automation(url, profile, auto_submit=False, field_mappings
             });
         }''')
 
-        screenshot_bytes = await page.screenshot()
-        screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+        if raw_next_fields:
+            log(f"Found {len(raw_next_fields)} new fields. Auto-mapping for next step...")
+            # We reuse the current title/URL but could refresh them if needed
+            curr_title = await page.title()
+            next_fields_mapped = await analyze_form_advanced(curr_title, page.url, profile, raw_next_fields, None)
+            
+            # Ensure they have the correct structure for frontend (status/profileKey)
+            # If analyze_form_advanced returned a list of mappings, we need to merge them back
+            if isinstance(next_fields_mapped, list):
+                # Merge mappings back into the raw field objects
+                for f in raw_next_fields:
+                    m = next((m for m in next_fields_mapped if m.get("idx") == f["idx"]), {})
+                    f["profileKey"] = m.get("profileKey")
+                    f["fillValue"] = m.get("fillValue")
+                    f["status"] = "GREEN" if m.get("profileKey") else "RED"
+                    f["confidence"] = m.get("confidence", "none")
+                    f["source"] = "AI" if m.get("profileKey") else None
+                next_fields_mapped = raw_next_fields
+    except Exception as e:
+        log(f"Next step mapping failed: {e}")
 
-        # 🧠 MAPPING LOGIC
-        if field_mappings:
-            log("Using user-provided field mappings...")
-            mappings = field_mappings
-        else:
-            mode_label = "OFFLINE heuristic" if OFFLINE_MODE else "Gemini AI"
-            log(f"Found {len(raw_fields)} fields. Sending to {mode_label} engine for mapping...")
-            mappings = await analyze_form_advanced(page_title, url, profile, raw_fields, screenshot_b64)
-
-        if not isinstance(mappings, list):
-            mappings = []
-
-        log(f"Engine/User provided {len(mappings)} mappings.")
-
-        filled = 0
-        for m in mappings:
-            idx = m.get("idx")
-            val = m.get("fillValue")
-            reqs = m.get("resizeReqs")
-
-            if val is None or val == "":
-                continue
-
-            field = next((f for f in raw_fields if f["idx"] == idx), None)
-            if not field: continue
-
-            locator = None
-            if field["id"]: locator = page.locator(f"#{field['id']}").first
-            elif field["name"]: locator = page.locator(f"[name='{field['name']}']").first
-            else: locator = page.locator("input, select, textarea").nth(idx)
-
-            try:
-                await locator.scroll_into_view_if_needed()
-
-                if field["type"] == "file":
-                    if val and str(val).startswith("data:"):
-                        try:
-                            header, encoded = val.split(",", 1)
-                            mime = header.split(":")[1].split(";")[0]
-                            ext = mime.split("/")[-1]
-                            if ext == "jpeg": ext = "jpg"
-                            tmp_path = os.path.join(tempfile.gettempdir(), f"upload_{uuid.uuid4().hex[:8]}.{ext}")
-                            with open(tmp_path, "wb") as f:
-                                f.write(base64.b64decode(encoded))
-                            val = tmp_path
-                            log(f"Decoded profile Base64 file to: {val}")
-                        except Exception as e:
-                            log(f"Failed to decode Base64 file: {e}")
-
-                    if reqs and os.path.exists(val):
-                        ext = val.lower().split(".")[-1]
-                        target_path = val.replace(f".{ext}", f"_resized.{ext}")
-                        log(f"Resizing file {val} with reqs: {reqs}")
-
-                        if ext in ["jpg", "jpeg", "png"]:
-                            val = resize_image(val, target_path, reqs.get("min_kb"), reqs.get("max_kb"), reqs.get("width_cm"), reqs.get("height_cm"))
-                        elif ext == "pdf":
-                            val = resize_pdf(val, target_path, reqs.get("min_kb"), reqs.get("max_kb"))
-
-                    if val and os.path.exists(val):
-                        await locator.set_input_files(val)
-                        log(f"Uploaded file to field: {field['label']}")
-                    else:
-                        log(f"Skipped file upload (file not found): {val}")
-                elif field["type"] == "select":
-                    await locator.select_option(label=val)
-                    log(f"Selected '{val}' for '{field['label']}'")
-                elif field["type"] in ["radio", "checkbox"]:
-                    await locator.check()
-                    log(f"Checked '{field['label']}'")
-                else:
-                    await locator.fill(str(val))
-                    log(f"Filled '{field['label']}' = '{val}'")
-                filled += 1
-                await page.wait_for_timeout(150)
-            except Exception as e:
-                log(f"Failed to fill field {idx} ('{field['label']}'): {e}")
-
-        # 🚀 AUTO-SUBMIT LOGIC
-        if auto_submit:
-            log("Auto-submit enabled. Searching for submit/next buttons...")
-            try:
-                # Common button texts in Indian gov forms
-                btn_selector = "button:not([type=button]), input[type=submit], .btn-primary, .next-btn, button:has-text('Next'), button:has-text('Submit'), button:has-text('Continue'), button:has-text('Save'), button:has-text('Proceed')"
-                submit_btn = page.locator(btn_selector).first
-                if await submit_btn.is_visible():
-                    log(f"Found submit button. Clicking...")
-                    await submit_btn.click()
-                    await page.wait_for_timeout(3000)
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                else:
-                    log("No obvious submit button found.")
-            except Exception as e:
-                log(f"Auto-submit failed: {e}")
-
-        # 🔍 DETECT & MAP NEXT STEP FIELDS
-        log("Checking for next step fields...")
-        next_fields_mapped = []
-        try:
-            raw_next_fields = await page.evaluate('''() => {
-                const inputs = document.querySelectorAll('input:not([type=hidden]):not([type=submit]), select, textarea');
-                return Array.from(inputs).map((el, i) => {
-                    let label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title") || "";
-                    if(el.id) {
-                        const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-                        if(l) label = label || l.innerText;
-                    }
-                    const parent = el.closest('label');
-                    if(parent && !label) label = parent.innerText;
-                    if(!label && el.previousElementSibling) label = el.previousElementSibling.innerText;
-
-                    return {
-                        idx: i,
-                        type: el.tagName.toLowerCase() === 'select' ? 'select' : el.getAttribute('type') || 'text',
-                        id: el.id,
-                        name: el.getAttribute('name'),
-                        label: (label||"").trim(),
-                        options: el.tagName.toLowerCase() === 'select' ? Array.from(el.options).map(o=>o.text) : []
-                    }
-                });
-            }''')
-
-            if raw_next_fields:
-                log(f"Found {len(raw_next_fields)} new fields. Auto-mapping for next step...")
-                # We reuse the current title/URL but could refresh them if needed
-                curr_title = await page.title()
-                next_fields_mapped = await analyze_form_advanced(curr_title, page.url, profile, raw_next_fields, None)
-                
-                # Ensure they have the correct structure for frontend (status/profileKey)
-                # If analyze_form_advanced returned a list of mappings, we need to merge them back
-                if isinstance(next_fields_mapped, list):
-                    # Merge mappings back into the raw field objects
-                    for f in raw_next_fields:
-                        m = next((m for m in next_fields_mapped if m.get("idx") == f["idx"]), {})
-                        f["profileKey"] = m.get("profileKey")
-                        f["fillValue"] = m.get("fillValue")
-                        f["status"] = "GREEN" if m.get("profileKey") else "RED"
-                        f["confidence"] = m.get("confidence", "none")
-                    next_fields_mapped = raw_next_fields
-        except Exception as e:
-            log(f"Next step mapping failed: {e}")
-
-        final_screenshot = base64.b64encode(await page.screenshot(full_page=True)).decode('utf-8')
-        await browser.close()
-
+    final_screenshot = base64.b64encode(await page.screenshot(full_page=False)).decode('utf-8')
+    session.last_screenshot = final_screenshot
+        
         return {
             "success": True,
             "filledCount": filled,
             "auditLog": audit_log,
             "hasCaptcha": has_captcha,
             "screenshotBase64": final_screenshot,
-            "nextFields": next_fields_mapped
+            "nextFields": next_fields_mapped,
+            "sessionId": session.session_id
         }
 
 

@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import DocumentRequirementModal from "@/components/DocumentRequirementModal";
 import { defaultProfile, DOCUMENT_TYPES } from "@/lib/profileSchema";
 
 const STATUS_COLORS = { GREEN: "#00e5a0", YELLOW: "#ffd97d", RED: "#ff5c75" };
@@ -22,6 +23,11 @@ export default function FillPage() {
   const [sessionId, setSessionId] = useState(null);
   const [autoSubmit, setAutoSubmit] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(1);
+  const [showReqModal, setShowReqModal] = useState(null); // idx of field
+  const [fieldReqs, setFieldReqs] = useState({}); // { idx: {...} }
+  const [activeAiFieldIdx, setActiveAiFieldIdx] = useState(null);
+  const [browserUrlDisplay, setBrowserUrlDisplay] = useState("");
+  const [isNavigating, setIsNavigating] = useState(false);
 
   useEffect(() => {
     try {
@@ -79,6 +85,17 @@ export default function FillPage() {
     setError(null);
     setStep("filling");
 
+    // 🕒 Polling for real-time visibility
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/browser/screenshot/${sessionId}`);
+        const data = await res.json();
+        if (data.screenshotBase64) {
+          setFillResult(prev => ({ ...prev, screenshotBase64: data.screenshotBase64 }));
+        }
+      } catch (e) { console.error("Polling error:", e); }
+    }, 2000);
+
     const enrichedFields = fields.map((f, idx) => ({
       ...f,
       _manualValue: manualValues[idx] || null,
@@ -110,17 +127,20 @@ export default function FillPage() {
           setManualValues({});
           setStep("analyzed");
           
-          // 🚀 AUTO-CONTINUE (Turbo Mode)
+          // 🚀 AUTO-CONTINUE (Turbo Mode or User requested "Next")
           if (autoSubmit || overrideAutoSubmit) {
-            console.log("[FillPage] Turbo Mode: Auto-starting next step...");
-            setTimeout(() => startFill(), 1500);
+            console.log("[FillPage] Auto-triggering next step...");
+            setTimeout(() => startFill(overrideAutoSubmit), 2000);
           }
         } else {
           setStep("done_step");
         }
       }
     } catch (e) { setError(e.message); setStep("analyzed"); }
-    finally { setFilling(false); }
+    finally { 
+      clearInterval(pollInterval);
+      setFilling(false); 
+    }
   };
 
   const turboFill = async () => {
@@ -143,6 +163,53 @@ export default function FillPage() {
     const newFields = [...fields];
     newFields[idx][key] = value;
     setFields(newFields);
+  };
+
+  const syncToProfile = async (idx) => {
+    const val = manualValues[idx];
+    if (!val) return;
+    
+    // We send back to backend to update learning store
+    const field = fields[idx];
+    try {
+      await fetch("/api/profile/update-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mappings: [{ 
+            label: field.label, 
+            name: field.name, 
+            profileKey: `MANUAL:${field.label || field.name}`, // Special prefix for manual learning
+            fillValue: val 
+          }]
+        })
+      });
+      console.log("Synced to profile!");
+    } catch (e) { console.error(e); }
+  };
+
+  const handleBrowserCommand = async (command, extra = {}) => {
+    if (!sessionId || filling || isNavigating) return;
+    setIsNavigating(true);
+    try {
+       const res = await fetch("/api/browser/command", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ sessionId, command, ...extra })
+       });
+       const data = await res.json();
+       if (data.screenshotBase64) {
+          setFillResult(prev => ({ ...prev, screenshotBase64: data.screenshotBase64 }));
+       }
+    } catch (e) { console.error(e); }
+    finally { setIsNavigating(false); }
+  };
+
+  const handleBrowserClick = (e) => {
+    const rect = e.target.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 1366;
+    const y = ((e.clientY - rect.top) / rect.height) * 768;
+    handleBrowserCommand("click", { x, y });
   };
 
   return (
@@ -184,7 +251,7 @@ export default function FillPage() {
                    </>
                 )}
                 {sessionId && (
-                  <button className="btn btn-red btn-sm" onClick={() => { setSessionId(null); setStep("input"); setFields([]); setFormUrl(""); setCurrentStepIndex(1); }}>
+                   <button className="btn btn-red btn-sm" onClick={() => { setSessionId(null); setStep("input"); setFields([]); setFormUrl(""); setCurrentStepIndex(1); }}>
                     ❌ Close Session
                   </button>
                 )}
@@ -210,81 +277,143 @@ export default function FillPage() {
           {error && <div className="error-box mt-3">❌ {error}</div>}
         </div>
 
-        <div className="dashboard-grid">
-          <div className="fields-column">
-            {fields.length > 0 && (
-              <div className="glass-card mb-6 overflow-hidden">
-                <div className="p-4 border-b border-glass bg-glass flex justify-between">
-                  <h3 style={{ fontSize: "0.9rem" }}>Step {currentStepIndex} Fields</h3>
-                  <span className="badge badge-blue">{fields.length}</span>
-                </div>
-                <div className="fields-list" style={{ maxHeight: '500px', overflowY: 'auto' }}>
-                  {fields.map((f, idx) => {
-                    const mappedValue = f.profileKey ? getProfileValue(f.profileKey) : "";
-                    const displayValue = manualValues[idx] !== undefined ? manualValues[idx] : mappedValue;
-                    return (
-                      <div key={idx} className="p-3 border-b border-glass last:border-0 hover:bg-glass-light transition-colors">
-                        <div className="flex justify-between mb-1">
-                          <span className="text-xs font-semibold opacity-80">{f.label || f.name}</span>
-                          <span className={`status-dot ${f.status?.toLowerCase() || 'red'}`}></span>
-                        </div>
-                        <input className="form-input text-xs p-1 h-8" value={displayValue || ""} placeholder="..."
-                          onChange={(e) => setManualValues(prev => ({ ...prev, [idx]: e.target.value }))} />
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="preview-column">
-             {(step === "analyzed" || step === "done_step") && fields.length > 0 && (
-                <div className="glass-card p-6 mb-6 text-center">
-                   <h3 className="mb-4">{step === "done_step" ? "Step AI Fill Complete" : `Ready to Fill Step ${currentStepIndex}`}</h3>
-                   <div className="flex gap-4">
-                     {step === "done_step" && (
-                        <button className="btn btn-secondary w-full btn-lg" onClick={() => router.push("/review")}>
-                          📋 View AI Audit Log
-                        </button>
-                     )}
-                     <button className="btn btn-primary w-full btn-lg" onClick={() => startFill()} disabled={filling}>
-                        {filling ? "AI Thinking..." : (step === "done_step" ? "➡️ AI Fetch Next Step" : "✨ AI Agent: Fill This Step")}
-                     </button>
+        <div className="dashboard-grid-hybrid">
+          <div className="preview-pane">
+             <div className="browser-shell" style={{ height: 'calc(100vh - 250px)' }}>
+                <div className="browser-header">
+                   <div className="browser-controls">
+                      <div className="browser-dot dot-red"></div>
+                      <div className="browser-dot dot-yellow"></div>
+                      <div className="browser-dot dot-green"></div>
+                   </div>
+                   <div className="browser-nav-btns">
+                      <button className="browser-nav-btn" onClick={() => handleBrowserCommand("back")}>←</button>
+                      <button className="browser-nav-btn" onClick={() => handleBrowserCommand("forward")}>→</button>
+                      <button className="browser-nav-btn" onClick={() => handleBrowserCommand("refresh")}>↻</button>
+                   </div>
+                   <div className="browser-url-bar">
+                      <span style={{ fontSize: '0.8rem' }}>🔒</span>
+                      <input 
+                        className="browser-url-input" 
+                        value={browserUrlDisplay || formUrl} 
+                        onChange={(e) => setBrowserUrlDisplay(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleBrowserCommand("navigate", { text: browserUrlDisplay })}
+                      />
                    </div>
                 </div>
-             )}
 
-             {(step === "filling" || step === "captcha" || step === "done_step") && (
-                <div className="glass-card p-6">
-                   <div className="flex items-center gap-3 mb-4">
-                      {filling ? <span className="spinner-sm"></span> : <span>📺</span>}
-                      <h3 style={{ fontSize: "1rem" }}>{filling ? "AI working..." : "Browser Preview"}</h3>
-                   </div>
+                <div className="screenshot-browser-container" onClick={handleBrowserClick}>
                    {fillResult?.screenshotBase64 ? (
-                      <div className="screenshot-wrapper">
-                         <img src={`data:image/png;base64,${fillResult.screenshotBase64}`} alt="Live View" style={{ borderRadius: '8px' }} />
-                         <div className="live-overlay">Step {currentStepIndex}</div>
-                      </div>
+                      <img src={`data:image/png;base64,${fillResult.screenshotBase64}`} alt="Live View" className="interactive-ss" />
                    ) : (
-                      <div className="browser-placeholder" style={{ height: '300px', border: '2px dashed rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
-                         Preparing browser instance...
+                      <div className="browser-placeholder">
+                         {isNavigating ? <span className="spinner"></span> : <span className="spinner-sm mb-4"></span>}
+                         <p>{isNavigating ? "Navigating..." : "Waiting for Browser Stream..."}</p>
                       </div>
                    )}
+                   {filling && (
+                     <div className="filling-overlay-v2">
+                        <div className="spinner"></div>
+                        <div className="mt-4 font-bold text-white tracking-widest uppercase text-xs">AI Agent Filling Form...</div>
+                        <div className="browser-progress-line" style={{ width: '40%' }}></div>
+                     </div>
+                   )}
+                </div>
+
+                <div className="browser-status-bar">
+                   <div className="ai-status-indicator">
+                      <div className={filling ? "pulse-red" : "status-dot green"}></div>
+                      <span className="font-semibold uppercase tracking-tighter" style={{ fontSize: '10px' }}>
+                        {filling ? "AI Agent Active" : "Agent Standby"}
+                      </span>
+                   </div>
+                   <div className="text-secondary" style={{ fontSize: '10px' }}>
+                      {sessionId ? `SID: ${sessionId.substring(0,8)}...` : "No Active Session"}
+                   </div>
+                </div>
+             </div>
+          </div>
+
+          <div className="sidebar-pane">
+             {fields.length > 0 ? (
+               <div className="glass-card flex flex-col" style={{ height: 'calc(100vh - 250px)' }}>
+                 <div className="p-4 border-b border-glass bg-glass flex justify-between items-center">
+                   <h3 style={{ fontSize: "0.8rem" }}>AI Agent Intelligence</h3>
+                   <span className="badge badge-blue">{fields.length} Fields</span>
+                 </div>
+                 
+                 <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                    {fields.map((f, idx) => {
+                      const mappedValue = f.profileKey ? getProfileValue(f.profileKey) : "";
+                      const displayValue = manualValues[idx] !== undefined ? manualValues[idx] : mappedValue;
+                      const isAiFilled = f.source === "AI" || (f.profileKey && !manualValues[idx]);
+
+                      return (
+                        <div key={idx} className={`p-3 mb-3 bg-glass rounded-lg border border-transparent hover:border-glass transition-all relative ${isAiFilled ? 'field-ai-filled' : ''}`}>
+                          {isAiFilled && <div className="ai-badge-mini">AI</div>}
+                          <div className="flex justify-between mb-2 items-center">
+                            <span className="text-xs font-semibold opacity-70 truncate" style={{ maxWidth: '80%' }}>{f.label || f.name}</span>
+                            <div className="flex gap-1 items-center">
+                               {f.type === 'file' && (
+                                 <button className="text-[10px] text-blue-400 underline" onClick={() => setShowReqModal(idx)}>Rules</button>
+                               )}
+                               <span className={`status-dot ${f.status?.toLowerCase() || (isAiFilled ? 'green' : 'red')}`}></span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                             <input className="form-input text-xs p-1 h-8 flex-1" value={displayValue || ""} 
+                               style={isAiFilled ? { borderColor: 'rgba(0, 229, 160, 0.3)' } : {}}
+                               placeholder={f.type === 'file' ? "Upload from Profile" : "Empty..."}
+                               onChange={(e) => setManualValues(prev => ({ ...prev, [idx]: e.target.value }))} />
+                             
+                             {!f.profileKey && manualValues[idx] && (
+                               <button className="btn btn-xs btn-primary p-1" title="Save to Profile" onClick={() => syncToProfile(idx)}>💾</button>
+                             )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                 </div>
+
+                 <div className="p-4 border-t border-glass bg-glass">
+                    <button className="btn btn-primary w-full h-12" onClick={() => startFill()} disabled={filling}>
+                       {filling ? "AI Solving..." : (step === "done_step" ? "Next Step ➡️" : "✨ Run AI Auto-Fill")}
+                    </button>
+                    {step === "done_step" && (
+                       <button className="btn btn-secondary w-full mt-2" onClick={() => router.push("/review")}>Review Audit Log</button>
+                    )}
+                 </div>
+               </div>
+             ) : (
+                <div className="glass-card p-10 text-center opacity-50">
+                   <p>Enter a URL above to begin.</p>
                 </div>
              )}
           </div>
         </div>
+
+        <DocumentRequirementModal 
+           isOpen={showReqModal !== null} 
+           onClose={() => setShowReqModal(null)}
+           fieldLabel={showReqModal !== null ? (fields[showReqModal]?.label || fields[showReqModal]?.name) : ''}
+           initialReqs={showReqModal !== null ? fieldReqs[showReqModal] : null}
+           onSave={(data) => {
+             setFieldReqs(prev => ({ ...prev, [showReqModal]: data }));
+             updateFieldMapping(showReqModal, 'resizeReqs', data);
+             setShowReqModal(null);
+           }}
+        />
       </div>
 
       <style>{`
-        .dashboard-grid { display: grid; grid-template-columns: 350px 1fr; gap: 24px; margin-top: 24px; }
+        .dashboard-grid-hybrid { display: grid; grid-template-columns: 1fr 380px; gap: 24px; margin-top: 24px; align-items: start; }
+        .preview-pane { position: sticky; top: 100px; }
+        .screenshot-browser-container { position: relative; width: 100%; height: 100%; cursor: pointer; background: #111; display: flex; align-items: center; justify-content: center; overflow: auto; }
+        .interactive-ss { width: 100%; min-width: 1366px; height: auto; display: block; }
         .status-dot { width: 8px; height: 8px; border-radius: 50%; }
         .status-dot.green { background: #00e5a0; box-shadow: 0 0 5px #00e5a0; }
         .status-dot.yellow { background: #ffd97d; }
         .status-dot.red { background: #ff5c75; }
-        .screenshot-wrapper { position: relative; }
-        .live-overlay { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.6); color: white; padding: 4px 10px; border-radius: 20px; font-size: 0.7rem; backdrop-filter: blur(4px); }
         .btn-red { background: rgba(255, 92, 117, 0.1); color: #ff5c75; border: 1px solid rgba(255, 92, 117, 0.3); }
         .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
         .switch input { opacity: 0; width: 0; height: 0; }
@@ -293,7 +422,15 @@ export default function FillPage() {
         input:checked + .slider { background-color: var(--accent-primary); }
         input:checked + .slider:before { transform: translateX(20px); }
         .spinner-sm { width: 16px; height: 16px; border: 2px solid rgba(108,99,255,0.2); border-top-color: #6c63ff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        .pulse { animation: pulse 2s infinite; }
+        .dot { width: 6px; height: 6px; border-radius: 50%; }
+        .bg-green { background: #00e5a0; }
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        .browser-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; width: 100%; opacity: 0.5; }
       `}</style>
     </div>
   );

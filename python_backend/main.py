@@ -16,10 +16,19 @@ class AskAIRequest(BaseModel):
     image: Optional[str] = None
 
 class BrowserRequest(BaseModel):
-    url: str
+    url: Optional[str] = None
     profile: dict
     autoSubmit: bool = False
     fieldMappings: Optional[list] = None
+    sessionId: Optional[str] = None
+
+class BrowserCommand(BaseModel):
+    sessionId: str
+    command: str  # click | type | scroll | refresh | back | forward | navigate
+    idx: Optional[int] = None
+    text: Optional[str] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
 
 # Allow CORS for Next.js frontend
 app.add_middleware(
@@ -42,12 +51,74 @@ async def log_requests(request: Request, call_next):
 async def root():
     return {"message": "FormBharo AI Backend is running"}
 
+@app.get("/ping")
+async def ping():
+    return {"status": "ok", "message": "Backend is awake"}
+
 @app.post("/api/start-form-fill")
 async def start_form_fill(req: BrowserRequest):
     try:
-        return await run_browser_automation(req.url, req.profile, req.autoSubmit, req.fieldMappings)
+        from browser_agent import run_browser_automation
+        return await run_browser_automation(req.url, req.profile, req.autoSubmit, req.fieldMappings, req.sessionId)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/browser/command")
+async def browser_command(req: BrowserCommand):
+    try:
+        from browser_agent import SESSIONS, click_coordinates
+        if req.sessionId not in SESSIONS:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session = SESSIONS[req.sessionId]
+        page = session.page
+        
+        if req.command == "click" and req.x is not None and req.y is not None:
+            await click_coordinates(req.sessionId, req.x, req.y)
+        elif req.command == "type" and req.idx is not None:
+            # Type into field by index
+            await page.evaluate(f'''(idx, txt) => {{
+                const inputs = document.querySelectorAll('input:not([type=hidden]):not([type=submit]), select, textarea');
+                if(inputs[idx]) {{
+                    inputs[idx].value = txt;
+                    inputs[idx].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    inputs[idx].dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }}''', req.idx, req.text)
+        elif req.command == "scroll":
+            await page.mouse.wheel(0, req.y or 300)
+        elif req.command == "back":
+            from browser_agent import go_back
+            screenshot_bytes = await go_back(req.sessionId)
+        elif req.command == "forward":
+            from browser_agent import go_forward
+            screenshot_bytes = await go_forward(req.sessionId)
+        elif req.command == "refresh":
+            from browser_agent import reload_page
+            screenshot_bytes = await reload_page(req.sessionId)
+        elif req.command == "navigate" and req.text:
+            from browser_agent import navigate_to
+            screenshot_bytes = await navigate_to(req.sessionId, req.text)
+
+        if not screenshot_bytes:
+            screenshot_bytes = await page.screenshot()
+        
+        screenshot = base64.b64encode(screenshot_bytes).decode('utf-8')
+        return {"success": True, "screenshotBase64": screenshot}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/browser/screenshot/{session_id}")
+async def get_screenshot(session_id: str):
+    from browser_agent import SESSIONS
+    if session_id not in SESSIONS:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = SESSIONS[session_id]
+    screenshot = base64.b64encode(await session.page.screenshot()).decode('utf-8')
+    return {"screenshotBase64": screenshot}
 
 
 @app.post("/api/save-feedback")
@@ -87,6 +158,18 @@ async def analyze_form(req: dict):
         if not url:
             raise HTTPException(status_code=400, detail="URL is required")
         return await run_analysis_automation(url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/profile/update-key")
+async def update_profile_key(req: dict):
+    """Allows saving new mappings to the learning store from manual sidebar input."""
+    try:
+        from browser_agent import save_learning_feedback
+        mappings = req.get("mappings", [])
+        await save_learning_feedback(mappings)
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

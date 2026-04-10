@@ -448,6 +448,11 @@ export default function UploadPage() {
             </div>
 
             <div className="tip-text mt-4">{t.tip}</div>
+            
+            <div className="mt-4 text-center">
+              <span className="text-sm text-gray-400">Extraction failing? Try </span>
+              <a href="/manual" className="text-sm text-primary underline">building your profile manually (Guided)</a>
+            </div>
           </div>
 
           {/* RIGHT: uploaded docs list */}
